@@ -4,6 +4,9 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 from . import pulse_counter
+import math
+import logging
+import collections
 
 FAN_MIN_TIME = 0.100
 SAFETY_CHECK_INIT_TIME = 3
@@ -37,6 +40,7 @@ class Fan:
             self.enable_pin = ppins.setup_pin('digital_out', enable_pin)
             self.enable_pin.setup_max_duration(0.)
 
+        self.name = config.get_name().split()[-1]
         self.num_err = 0
         self.max_err = 3
         # Setup tachometer
@@ -46,9 +50,15 @@ class Fan:
         self.printer.register_event_handler("gcode:request_restart",
                                             self._handle_request_restart)
 
+        self.printer.register_event_handler("klippy:ready",
+                                            self.handle_ready)
+
+    def handle_ready(self):
+        reactor = self.printer.get_reactor()
         if self.tachometer.min_rpm > 0:
-            self.printer.register_timer(
-                self.fan_check, self.printer.monotonic()+SAFETY_CHECK_INIT_TIME)
+            logging.info("handle_ready register")
+            reactor.register_timer(
+                self.fan_check,  reactor.monotonic()+SAFETY_CHECK_INIT_TIME)
 
     def get_mcu(self):
         return self.mcu_fan.get_mcu()
@@ -90,15 +100,15 @@ class Fan:
         }
 
     def fan_check(self, eventtime):
-        speed, rpm = self.get_status(eventtime)
-        if rpm is not None:
-            if speed > 0 and rpm < self.min_rpm:
+        fan_status = self.get_status(eventtime)
+        if fan_status['speed'] > 0 and fan_status['rpm'] is not None:
+            if fan_status['rpm'] < self.tachometer.min_rpm:
                 self.num_err += 1
             else:
                 self.num_err = 0
         if self.num_err > self.max_err:
             msg = "'%s' spinning below minimum safe speed of %d rev/min" % (
-                self.name, self.min_rpm)
+                self.name, self.tachometer.min_rpm)
             logging.error(msg)
             self.printer.invoke_shutdown(msg)
             return self.printer.get_reactor().NEVER
@@ -114,14 +124,10 @@ class FanTachometer:
             self.ppr = config.getint('tachometer_ppr', 2, minval=1)
             poll_time = config.getfloat('tachometer_poll_interval',
                                         0.0015, above=0.)
+            self.min_rpm = config.getint("min_rpm", 0, minval=0)
             sample_time = 1.
             self._freq_counter = pulse_counter.FrequencyCounter(
                 printer, pin, sample_time, poll_time)
-
-        self.min_rpm = config.getint("min_rpm", 0, minval=0)
-        if self.min_rpm > 0 and self._freq_counter is None:
-            raise config.error(
-                "'tachometer_pin' must be specified before enabling `min_rpm`")
 
     def get_status(self, eventtime):
         if self._freq_counter is not None:
