@@ -4,13 +4,10 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 from . import pulse_counter
-import math
 import logging
-import collections
 
 FAN_MIN_TIME = 0.100
 SAFETY_CHECK_INIT_TIME = 3
-
 
 class Fan:
     def __init__(self, config, default_shutdown_speed=0.):
@@ -34,6 +31,7 @@ class Fan:
         self.mcu_fan.setup_cycle_time(cycle_time, hardware_pwm)
         shutdown_power = max(0., min(self.max_power, shutdown_speed))
         self.mcu_fan.setup_start_value(0., shutdown_power)
+
         self.enable_pin = None
         enable_pin = config.get('enable_pin', None)
         if enable_pin is not None:
@@ -49,20 +47,11 @@ class Fan:
         # Register callbacks
         self.printer.register_event_handler("gcode:request_restart",
                                             self._handle_request_restart)
-
         self.printer.register_event_handler("klippy:ready",
                                             self.handle_ready)
 
-    def handle_ready(self):
-        reactor = self.printer.get_reactor()
-        if self.tachometer.min_rpm > 0:
-            logging.info("handle_ready register")
-            reactor.register_timer(
-                self.fan_check,  reactor.monotonic()+SAFETY_CHECK_INIT_TIME)
-
     def get_mcu(self):
         return self.mcu_fan.get_mcu()
-
     def set_speed(self, print_time, value):
         if value < self.off_below:
             value = 0.
@@ -76,31 +65,33 @@ class Fan:
             elif value == 0 and self.last_fan_value > 0:
                 self.enable_pin.set_digital(print_time, 0)
         if (value and value < self.max_power and self.kick_start_time
-                and (not self.last_fan_value or value - self.last_fan_value > .5)):
+            and (not self.last_fan_value or value - self.last_fan_value > .5)):
             # Run fan at full speed for specified kick_start_time
             self.mcu_fan.set_pwm(print_time, self.max_power)
             print_time += self.kick_start_time
         self.mcu_fan.set_pwm(print_time, value)
         self.last_fan_time = print_time
         self.last_fan_value = value
-
     def set_speed_from_command(self, value):
         toolhead = self.printer.lookup_object('toolhead')
         toolhead.register_lookahead_callback((lambda pt: None))
         curtime = self.printer.get_reactor().monotonic()
         print_time = self.get_mcu().estimated_print_time(curtime)
         self.set_speed(print_time + FAN_MIN_TIME, value)
-
     def _handle_request_restart(self, print_time):
         self.set_speed(print_time, 0.)
-
+    def handle_ready(self):
+        reactor = self.printer.get_reactor()
+        if self.tachometer.min_rpm > 0:
+            reactor.register_timer(
+                self.fan_check,  reactor.monotonic()+SAFETY_CHECK_INIT_TIME)
+        
     def get_status(self, eventtime):
         tachometer_status = self.tachometer.get_status(eventtime)
         return {
             'speed': self.last_fan_value,
             'rpm': tachometer_status['rpm'],
         }
-
     def fan_check(self, eventtime):
         fan_status = self.get_status(eventtime)
         if fan_status['speed'] > 0 and fan_status['rpm'] is not None:
@@ -115,21 +106,21 @@ class Fan:
             self.printer.invoke_shutdown(msg)
             return self.printer.get_reactor().NEVER
         return eventtime + 1.5
-
-
+    
 class FanTachometer:
     def __init__(self, config):
         printer = config.get_printer()
         self._freq_counter = None
+
         pin = config.get('tachometer_pin', None)
         if pin is not None:
             self.ppr = config.getint('tachometer_ppr', 2, minval=1)
             poll_time = config.getfloat('tachometer_poll_interval',
                                         0.0015, above=0.)
-            self.min_rpm = config.getint("min_rpm", 0, minval=0)
             sample_time = 1.
             self._freq_counter = pulse_counter.FrequencyCounter(
                 printer, pin, sample_time, poll_time)
+            self.min_rpm = config.getint("min_rpm", 0, minval=0)
 
     def get_status(self, eventtime):
         if self._freq_counter is not None:
@@ -138,7 +129,6 @@ class FanTachometer:
             rpm = None
         return {'rpm': rpm}
 
-
 class PrinterFan:
     def __init__(self, config):
         self.fan = Fan(config)
@@ -146,19 +136,15 @@ class PrinterFan:
         gcode = config.get_printer().lookup_object('gcode')
         gcode.register_command("M106", self.cmd_M106)
         gcode.register_command("M107", self.cmd_M107)
-
     def get_status(self, eventtime):
         return self.fan.get_status(eventtime)
-
     def cmd_M106(self, gcmd):
         # Set fan speed
         value = gcmd.get_float('S', 255., minval=0.) / 255.
         self.fan.set_speed_from_command(value)
-
     def cmd_M107(self, gcmd):
         # Turn fan off
         self.fan.set_speed_from_command(0.)
-
 
 def load_config(config):
     return PrinterFan(config)
