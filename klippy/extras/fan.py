@@ -86,8 +86,10 @@ class Fan:
 
     def set_speed_from_command(self, value):
         toolhead = self.printer.lookup_object('toolhead')
-        toolhead.register_lookahead_callback((lambda pt:
-                                              self.set_speed(pt, value)))
+        toolhead.register_lookahead_callback((lambda pt: None))
+        curtime = self.printer.get_reactor().monotonic()
+        print_time = self.get_mcu().estimated_print_time(curtime)
+        self.set_speed(print_time + FAN_MIN_TIME, value)
 
     def _handle_request_restart(self, print_time):
         self.set_speed(print_time, 0.)
