@@ -82,7 +82,7 @@ class Fan:
         self.set_speed(print_time, 0.)
     def handle_ready(self):
         reactor = self.printer.get_reactor()
-        if self.tachometer.min_rpm > 0:
+        if self.tachometer.min_rpm is not None and self.tachometer.min_rpm > 0:
             reactor.register_timer(
                 self.fan_check,  reactor.monotonic()+SAFETY_CHECK_INIT_TIME)
         
@@ -111,6 +111,7 @@ class FanTachometer:
     def __init__(self, config):
         printer = config.get_printer()
         self._freq_counter = None
+        self.min_rpm = None
 
         pin = config.get('tachometer_pin', None)
         if pin is not None:
